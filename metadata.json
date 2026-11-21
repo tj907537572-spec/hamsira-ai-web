@@ -1,0 +1,6 @@
+{
+  "name": "Ҳамшира AI",
+  "description": "Ҳамшираи рақамии тиббӣ: машваратҳо, дастурҳои нигоҳубин дар хона ва саволҳои зуд ба забони тоҷикӣ.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

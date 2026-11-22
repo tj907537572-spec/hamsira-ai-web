@@ -5,6 +5,7 @@ import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import com.example.data.local.AppDatabase
 import com.example.data.local.ChatRepository
+import com.example.data.model.MediaAttachment
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.runTest
 import org.junit.After
@@ -69,5 +70,27 @@ class ChatDatabaseTest {
         assertEquals(1, sessions.size)
         assertEquals("session-b", sessions.first().sessionId)
         assertEquals(0, repository.getSessionMessages("session-a").size)
+    }
+
+    @Test
+    fun `saves and restores message attachment metadata`() = runTest {
+        val attachment = MediaAttachment(
+            uriString = "file:///tmp/symptom_clip.mp4",
+            mimeType = "video/mp4",
+            isVideo = true,
+            displayName = "symptom_clip.mp4",
+            sizeBytes = 123_456L
+        )
+        repository.addMessage(
+            sessionId = "session-media",
+            isUser = true,
+            content = "Видеои сурфа",
+            attachment = attachment
+        )
+
+        val loaded = repository.getSessionMessages("session-media").single()
+        assertEquals("file:///tmp/symptom_clip.mp4", loaded.attachmentUri)
+        assertEquals("video/mp4", loaded.attachmentMimeType)
+        assertTrue(loaded.attachmentIsVideo)
     }
 }

@@ -8,7 +8,9 @@ import com.example.data.local.AppDatabase
 import com.example.data.local.ChatRepository
 import com.example.data.model.AppLanguage
 import com.example.data.model.ChatMessage
+import com.example.data.model.MediaAttachment
 import com.example.data.model.ResponseStyle
+import com.example.data.model.stringsFor
 import com.example.ui.ConsultationState
 import com.example.ui.HamshiraViewModel
 import kotlinx.coroutines.Dispatchers
@@ -24,6 +26,7 @@ import kotlinx.coroutines.withTimeout
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -64,7 +67,8 @@ class HamshiraViewModelTest {
                 history: List<ChatMessage>,
                 userPrompt: String,
                 language: AppLanguage,
-                responseStyle: ResponseStyle
+                responseStyle: ResponseStyle,
+                attachment: MediaAttachment?
             ): Flow<String> = flow {
                 emit("[МАСЛИҲАТ] ")
                 emit("[МАСЛИҲАТ] Оби гарм нӯшед ва ҳароратро назорат кунед.")
@@ -102,6 +106,52 @@ class HamshiraViewModelTest {
     }
 
     @Test
+    fun `sendCurrentInput with attachment and empty text uses default prompt and persists media`() = runBlocking {
+        var receivedAttachment: MediaAttachment? = null
+        val fakeAi = object : NurseAiClient {
+            override fun streamConsultation(
+                history: List<ChatMessage>,
+                userPrompt: String,
+                language: AppLanguage,
+                responseStyle: ResponseStyle,
+                attachment: MediaAttachment?
+            ): Flow<String> = flow {
+                receivedAttachment = attachment
+                emit("Дар акс сурхии сабук дида мешавад. Лутфан ба духтур нишон диҳед.")
+            }
+        }
+
+        val viewModel = HamshiraViewModel(
+            application = application,
+            chatRepository = chatRepository,
+            aiClient = fakeAi
+        )
+
+        val media = MediaAttachment(
+            uriString = "file:///data/user/0/com.example/files/attachments/sample.jpg",
+            mimeType = "image/jpeg",
+            isVideo = false,
+            displayName = "sample.jpg",
+            sizeBytes = 42_000L
+        )
+        viewModel.attachResolvedMedia(media)
+        viewModel.sendCurrentInput()
+
+        val state = withTimeout(5_000L) {
+            viewModel.uiState.first {
+                it.messages.size == 2 && it.consultationState == ConsultationState.Idle
+            }
+        }
+
+        assertNull(state.pendingAttachment)
+        assertEquals(media, receivedAttachment)
+        assertEquals(stringsFor(AppLanguage.TG).defaultMediaPrompt, state.messages[0].content)
+        assertEquals(media.uriString, state.messages[0].attachmentUri)
+        assertEquals("image/jpeg", state.messages[0].attachmentMimeType)
+        assertFalse(state.messages[0].attachmentIsVideo)
+    }
+
+    @Test
     fun `retry after AI failure does not duplicate user message in Room`() = runBlocking {
         var shouldFail = true
         val flakyAi = object : NurseAiClient {
@@ -109,7 +159,8 @@ class HamshiraViewModelTest {
                 history: List<ChatMessage>,
                 userPrompt: String,
                 language: AppLanguage,
-                responseStyle: ResponseStyle
+                responseStyle: ResponseStyle,
+                attachment: MediaAttachment?
             ): Flow<String> = flow {
                 if (shouldFail) {
                     throw IllegalStateException("Temporary network error")

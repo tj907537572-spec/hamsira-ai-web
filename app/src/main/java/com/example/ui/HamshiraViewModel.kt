@@ -1,9 +1,12 @@
 package com.example.ui
 
 import android.app.Application
+import android.net.Uri
 import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.example.core.AttachmentImportResult
+import com.example.core.MediaAttachmentHelper
 import com.example.core.NetworkMonitor
 import com.example.data.ai.HamshiraAiRepository
 import com.example.data.ai.NurseAiClient
@@ -15,11 +18,16 @@ import com.example.data.model.CareGuide
 import com.example.data.model.CareGuidesCatalog
 import com.example.data.model.ChatMessage
 import com.example.data.model.ConsultationSession
+import com.example.data.model.FirstAidCatalog
+import com.example.data.model.FirstAidMediaFilter
+import com.example.data.model.FirstAidTopic
 import com.example.data.model.GuideCategory
+import com.example.data.model.MediaAttachment
 import com.example.data.model.QuickPrompt
 import com.example.data.model.ResponseStyle
 import com.example.data.model.ThemeMode
 import com.example.data.model.UserSettings
+import com.example.data.model.stringsFor
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
@@ -39,7 +47,11 @@ sealed interface ConsultationState {
     data object Idle : ConsultationState
     data object Loading : ConsultationState
     data class Streaming(val partialText: String) : ConsultationState
-    data class Error(val message: String, val failedPrompt: String) : ConsultationState
+    data class Error(
+        val message: String,
+        val failedPrompt: String,
+        val failedAttachment: MediaAttachment? = null
+    ) : ConsultationState
 }
 
 data class HamshiraUiState(
@@ -50,15 +62,24 @@ data class HamshiraUiState(
     val totalMessageCount: Int = 0,
     val historySearchQuery: String = "",
     val isHistorySheetOpen: Boolean = false,
+    val isEmergencySheetOpen: Boolean = false,
     val consultationState: ConsultationState = ConsultationState.Idle,
     val settings: UserSettings = UserSettings(),
     val isOnline: Boolean = true,
     val inputText: String = "",
+    val pendingAttachment: MediaAttachment? = null,
+    val isImportingAttachment: Boolean = false,
+    val attachmentNotice: String? = null,
     val quickPrompts: List<QuickPrompt> = emptyList(),
     val guides: List<CareGuide> = emptyList(),
     val selectedCategory: GuideCategory = GuideCategory.ALL,
     val guideSearchQuery: String = "",
-    val selectedGuide: CareGuide? = null
+    val selectedGuide: CareGuide? = null,
+    val firstAidTopics: List<FirstAidTopic> = emptyList(),
+    val firstAidFilter: FirstAidMediaFilter = FirstAidMediaFilter.ALL,
+    val firstAidSearchQuery: String = "",
+    val selectedFirstAidTopic: FirstAidTopic? = null,
+    val firstAidStartInVideoMode: Boolean = true
 )
 
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -85,6 +106,14 @@ class HamshiraViewModel(
     private val _selectedGuide = MutableStateFlow<CareGuide?>(null)
     private val _historySearchQuery = MutableStateFlow("")
     private val _isHistorySheetOpen = MutableStateFlow(false)
+    private val _isEmergencySheetOpen = MutableStateFlow(false)
+    private val _pendingAttachment = MutableStateFlow<MediaAttachment?>(null)
+    private val _isImportingAttachment = MutableStateFlow(false)
+    private val _attachmentNotice = MutableStateFlow<String?>(null)
+    private val _firstAidFilter = MutableStateFlow(FirstAidMediaFilter.ALL)
+    private val _firstAidSearchQuery = MutableStateFlow("")
+    private val _selectedFirstAidTopic = MutableStateFlow<FirstAidTopic?>(null)
+    private val _firstAidStartInVideoMode = MutableStateFlow(true)
 
     private var activeGenerationJob: Job? = null
 
@@ -114,6 +143,46 @@ class HamshiraViewModel(
         )
     }
 
+    private val mediaAndEmergencyBundleFlow = combine(
+        _pendingAttachment,
+        _isImportingAttachment,
+        _attachmentNotice,
+        _isEmergencySheetOpen
+    ) { pendingAttachment, isImporting, notice, isEmergencyOpen ->
+        MediaAndEmergencyBundle(
+            pendingAttachment = pendingAttachment,
+            isImportingAttachment = isImporting,
+            attachmentNotice = notice,
+            isEmergencySheetOpen = isEmergencyOpen
+        )
+    }
+
+    private val firstAidBundleFlow = combine(
+        _firstAidFilter,
+        _firstAidSearchQuery,
+        _selectedFirstAidTopic,
+        _firstAidStartInVideoMode
+    ) { filter, query, selectedTopic, startInVideo ->
+        FirstAidUiBundle(
+            filter = filter,
+            searchQuery = query,
+            selectedTopic = selectedTopic,
+            startInVideoMode = startInVideo
+        )
+    }
+
+    private val guidesBundleFlow = combine(
+        _selectedCategory,
+        _guideSearchQuery,
+        _selectedGuide
+    ) { category, query, selectedGuide ->
+        GuidesUiBundle(
+            selectedCategory = category,
+            searchQuery = query,
+            selectedGuide = selectedGuide
+        )
+    }
+
     val uiState: StateFlow<HamshiraUiState> = combine(
         _sessionId,
         sessionMessagesFlow,
@@ -122,9 +191,9 @@ class HamshiraViewModel(
         settingsStore.settingsFlow,
         networkMonitor.isOnline,
         _inputText,
-        _selectedCategory,
-        _guideSearchQuery,
-        _selectedGuide
+        guidesBundleFlow,
+        mediaAndEmergencyBundleFlow,
+        firstAidBundleFlow
     ) { values ->
         val sessionId = values[0] as String
         @Suppress("UNCHECKED_CAST")
@@ -134,9 +203,13 @@ class HamshiraViewModel(
         val settings = values[4] as UserSettings
         val isOnline = values[5] as Boolean
         val inputText = values[6] as String
-        val selectedCategory = values[7] as GuideCategory
-        val searchQuery = values[8] as String
-        val selectedGuide = values[9] as CareGuide?
+        val guidesBundle = values[7] as GuidesUiBundle
+        val mediaAndEmergency = values[8] as MediaAndEmergencyBundle
+        val firstAidBundle = values[9] as FirstAidUiBundle
+
+        val selectedCategory = guidesBundle.selectedCategory
+        val searchQuery = guidesBundle.searchQuery
+        val selectedGuide = guidesBundle.selectedGuide
 
         val allGuides = CareGuidesCatalog.careGuides(settings.language)
         val filteredGuides = allGuides.filter { guide ->
@@ -148,6 +221,15 @@ class HamshiraViewModel(
             matchesCategory && matchesQuery
         }
 
+        val allFirstAid = FirstAidCatalog.topics(settings.language)
+        val faQuery = firstAidBundle.searchQuery.trim()
+        val filteredFirstAid = allFirstAid.filter { topic ->
+            faQuery.isEmpty() ||
+                topic.title.contains(faQuery, ignoreCase = true) ||
+                topic.shortBadge.contains(faQuery, ignoreCase = true) ||
+                topic.summary.contains(faQuery, ignoreCase = true)
+        }
+
         HamshiraUiState(
             sessionId = sessionId,
             messages = messages,
@@ -156,15 +238,24 @@ class HamshiraViewModel(
             totalMessageCount = historyBundle.totalMessageCount,
             historySearchQuery = historyBundle.searchQuery,
             isHistorySheetOpen = historyBundle.isSheetOpen,
+            isEmergencySheetOpen = mediaAndEmergency.isEmergencySheetOpen,
             consultationState = consultationState,
             settings = settings,
             isOnline = isOnline,
             inputText = inputText,
+            pendingAttachment = mediaAndEmergency.pendingAttachment,
+            isImportingAttachment = mediaAndEmergency.isImportingAttachment,
+            attachmentNotice = mediaAndEmergency.attachmentNotice,
             quickPrompts = CareGuidesCatalog.quickPrompts(settings.language),
             guides = filteredGuides,
             selectedCategory = selectedCategory,
             guideSearchQuery = searchQuery,
-            selectedGuide = selectedGuide
+            selectedGuide = selectedGuide,
+            firstAidTopics = filteredFirstAid,
+            firstAidFilter = firstAidBundle.filter,
+            firstAidSearchQuery = firstAidBundle.searchQuery,
+            selectedFirstAidTopic = firstAidBundle.selectedTopic,
+            firstAidStartInVideoMode = firstAidBundle.startInVideoMode
         )
     }.stateIn(
         scope = viewModelScope,
@@ -185,21 +276,76 @@ class HamshiraViewModel(
         _inputText.value = text
     }
 
+    fun attachMediaFromUri(uri: Uri, forcedIsVideo: Boolean? = null) {
+        viewModelScope.launch {
+            _isImportingAttachment.value = true
+            _attachmentNotice.value = null
+            val strings = stringsFor(uiState.value.settings.language)
+            when (val result = MediaAttachmentHelper.importFromUri(getApplication(), uri, forcedIsVideo)) {
+                is AttachmentImportResult.Success -> {
+                    _pendingAttachment.value = result.attachment
+                }
+                AttachmentImportResult.FileTooLarge -> {
+                    _attachmentNotice.value = strings.attachmentTooLarge
+                }
+                AttachmentImportResult.UnsupportedOrFailed -> {
+                    _attachmentNotice.value = strings.attachmentFailed
+                }
+            }
+            _isImportingAttachment.value = false
+        }
+    }
+
+    fun attachResolvedMedia(attachment: MediaAttachment) {
+        _attachmentNotice.value = null
+        _pendingAttachment.value = attachment
+    }
+
+    fun removePendingAttachment() {
+        _pendingAttachment.value = null
+    }
+
+    fun clearAttachmentNotice() {
+        _attachmentNotice.value = null
+    }
+
+    fun setAttachmentNotice(message: String) {
+        _attachmentNotice.value = message
+    }
+
+    fun openEmergencySheet() {
+        _isEmergencySheetOpen.value = true
+    }
+
+    fun closeEmergencySheet() {
+        _isEmergencySheetOpen.value = false
+    }
+
     fun sendCurrentInput() {
-        val text = _inputText.value.trim()
-        if (text.isEmpty()) return
+        if (activeGenerationJob?.isActive == true) return
+        val rawText = _inputText.value.trim()
+        val attachment = _pendingAttachment.value
+        if (rawText.isEmpty() && attachment == null) return
+
+        val prompt = rawText.ifEmpty { stringsFor(uiState.value.settings.language).defaultMediaPrompt }
         _inputText.value = ""
-        sendPrompt(text)
+        _pendingAttachment.value = null
+        _attachmentNotice.value = null
+        sendPromptInternal(prompt = prompt, attachment = attachment, recordUserMessage = true)
     }
 
     fun sendQuickPrompt(promptText: String) {
         if (promptText.isBlank()) return
-        sendPrompt(promptText.trim())
+        sendPromptInternal(prompt = promptText.trim(), attachment = null, recordUserMessage = true)
     }
 
     fun retryFailedPrompt() {
         val errorState = _consultationState.value as? ConsultationState.Error ?: return
-        sendPromptInternal(errorState.failedPrompt, recordUserMessage = false)
+        sendPromptInternal(
+            prompt = errorState.failedPrompt,
+            attachment = errorState.failedAttachment,
+            recordUserMessage = false
+        )
     }
 
     fun dismissError() {
@@ -225,6 +371,8 @@ class HamshiraViewModel(
         activeGenerationJob?.cancel()
         activeGenerationJob = null
         _consultationState.value = ConsultationState.Idle
+        _pendingAttachment.value = null
+        _attachmentNotice.value = null
         _sessionId.value = UUID.randomUUID().toString()
     }
 
@@ -244,6 +392,8 @@ class HamshiraViewModel(
         activeGenerationJob?.cancel()
         activeGenerationJob = null
         _consultationState.value = ConsultationState.Idle
+        _pendingAttachment.value = null
+        _attachmentNotice.value = null
         _sessionId.value = sessionId
     }
 
@@ -261,17 +411,19 @@ class HamshiraViewModel(
         activeGenerationJob?.cancel()
         activeGenerationJob = null
         _consultationState.value = ConsultationState.Idle
+        _pendingAttachment.value = null
+        _attachmentNotice.value = null
         viewModelScope.launch {
             chatRepository.clearAllHistory()
             _sessionId.value = UUID.randomUUID().toString()
         }
     }
 
-    private fun sendPrompt(prompt: String) {
-        sendPromptInternal(prompt, recordUserMessage = true)
-    }
-
-    private fun sendPromptInternal(prompt: String, recordUserMessage: Boolean) {
+    private fun sendPromptInternal(
+        prompt: String,
+        attachment: MediaAttachment?,
+        recordUserMessage: Boolean
+    ) {
         if (activeGenerationJob?.isActive == true) return
 
         val currentSession = _sessionId.value
@@ -284,7 +436,8 @@ class HamshiraViewModel(
                     chatRepository.addMessage(
                         sessionId = currentSession,
                         isUser = true,
-                        content = prompt
+                        content = prompt,
+                        attachment = attachment
                     )
                 }
 
@@ -295,7 +448,8 @@ class HamshiraViewModel(
                     history = historySnapshot,
                     userPrompt = prompt,
                     language = currentSettings.language,
-                    responseStyle = currentSettings.responseStyle
+                    responseStyle = currentSettings.responseStyle,
+                    attachment = attachment
                 ).collect { partial ->
                     latestAccumulated = partial
                     _consultationState.value = ConsultationState.Streaming(partial)
@@ -313,7 +467,8 @@ class HamshiraViewModel(
                 Log.e(TAG, "Timeout while consulting Hamshira AI", e)
                 _consultationState.value = ConsultationState.Error(
                     message = timeoutErrorMessage(currentSettings.language),
-                    failedPrompt = prompt
+                    failedPrompt = prompt,
+                    failedAttachment = attachment
                 )
             } catch (e: CancellationException) {
                 throw e
@@ -322,7 +477,8 @@ class HamshiraViewModel(
                 _consultationState.value = ConsultationState.Error(
                     message = e.localizedMessage?.takeIf { it.isNotBlank() }
                         ?: genericErrorMessage(currentSettings.language),
-                    failedPrompt = prompt
+                    failedPrompt = prompt,
+                    failedAttachment = attachment
                 )
             }
         }
@@ -342,6 +498,23 @@ class HamshiraViewModel(
 
     fun closeGuide() {
         _selectedGuide.value = null
+    }
+
+    fun selectFirstAidFilter(filter: FirstAidMediaFilter) {
+        _firstAidFilter.value = filter
+    }
+
+    fun onFirstAidSearchChanged(query: String) {
+        _firstAidSearchQuery.value = query
+    }
+
+    fun openFirstAidTopic(topic: FirstAidTopic, startInVideoMode: Boolean) {
+        _firstAidStartInVideoMode.value = startInVideoMode
+        _selectedFirstAidTopic.value = topic
+    }
+
+    fun closeFirstAidTopic() {
+        _selectedFirstAidTopic.value = null
     }
 
     fun updateLanguage(language: AppLanguage) {
@@ -366,9 +539,9 @@ class HamshiraViewModel(
     }
 
     private fun timeoutErrorMessage(language: AppLanguage): String = when (language) {
-        AppLanguage.TG -> "Вақти интизории ҷавоб ба охир расид (60 сония). Пайвастро санҷед ва аз нав кӯшиш кунед."
-        AppLanguage.RU -> "Превышено время ожидания ответа (60 сек). Проверьте соединение и повторите попытку."
-        AppLanguage.UZ_LATN -> "Javob kutish vaqti tugadi (60 soniya). Internet aloqasini tekshirib, qayta urinib ko'ring."
+        AppLanguage.TG -> "Вақти интизории ҷавоб ба охир расид. Пайвастро санҷед ва аз нав кӯшиш кунед."
+        AppLanguage.RU -> "Превышено время ожидания ответа. Проверьте соединение и повторите попытку."
+        AppLanguage.UZ_LATN -> "Javob kutish vaqti tugadi. Internet aloqasini tekshirib, qayta urinib ko'ring."
     }
 
     private fun genericErrorMessage(language: AppLanguage): String = when (language) {
@@ -384,4 +557,24 @@ private data class HistoryUiBundle(
     val totalMessageCount: Int,
     val searchQuery: String,
     val isSheetOpen: Boolean
+)
+
+private data class MediaAndEmergencyBundle(
+    val pendingAttachment: MediaAttachment?,
+    val isImportingAttachment: Boolean,
+    val attachmentNotice: String?,
+    val isEmergencySheetOpen: Boolean
+)
+
+private data class GuidesUiBundle(
+    val selectedCategory: GuideCategory,
+    val searchQuery: String,
+    val selectedGuide: CareGuide?
+)
+
+private data class FirstAidUiBundle(
+    val filter: FirstAidMediaFilter,
+    val searchQuery: String,
+    val selectedTopic: FirstAidTopic?,
+    val startInVideoMode: Boolean
 )

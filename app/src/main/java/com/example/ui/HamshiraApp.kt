@@ -10,8 +10,10 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Chat
 import androidx.compose.material.icons.automirrored.outlined.Chat
+import androidx.compose.material.icons.filled.MedicalServices
 import androidx.compose.material.icons.filled.MenuBook
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.outlined.MedicalServices
 import androidx.compose.material.icons.outlined.MenuBook
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material3.Icon
@@ -42,13 +44,16 @@ import androidx.navigation.compose.rememberNavController
 import com.example.data.model.ThemeMode
 import com.example.data.model.stringsFor
 import com.example.ui.components.ConsultationHistorySheet
+import com.example.ui.components.EmergencyAmbulanceSheet
 import com.example.ui.components.TopHeaderBar
 import com.example.ui.screens.ChatScreen
+import com.example.ui.screens.FirstAidScreen
 import com.example.ui.screens.GuidesScreen
 import com.example.ui.screens.SettingsScreen
 import com.example.ui.theme.HamshiraAiTheme
 
 const val ROUTE_CHAT = "chat"
+const val ROUTE_FIRST_AID = "first_aid"
 const val ROUTE_GUIDES = "guides"
 const val ROUTE_SETTINGS = "settings"
 
@@ -86,6 +91,13 @@ fun HamshiraApp(
                 selectedIcon = Icons.AutoMirrored.Filled.Chat,
                 unselectedIcon = Icons.AutoMirrored.Outlined.Chat,
                 testTag = "nav_chat"
+            ),
+            NavDestinationItem(
+                route = ROUTE_FIRST_AID,
+                label = strings.navFirstAid,
+                selectedIcon = Icons.Filled.MedicalServices,
+                unselectedIcon = Icons.Outlined.MedicalServices,
+                testTag = "nav_first_aid"
             ),
             NavDestinationItem(
                 route = ROUTE_GUIDES,
@@ -129,7 +141,8 @@ fun HamshiraApp(
                         showChatActions = isChatRoute,
                         savedSessionsCount = uiState.sessions.size,
                         onHistoryClick = viewModel::openHistorySheet,
-                        onNewDialogClick = viewModel::startNewConsultation
+                        onNewDialogClick = viewModel::startNewConsultation,
+                        onEmergencyClick = viewModel::openEmergencySheet
                     )
                 },
                 bottomBar = {
@@ -226,7 +239,29 @@ fun HamshiraApp(
                                     onOpenHistory = viewModel::openHistorySheet,
                                     onRetryClick = viewModel::retryFailedPrompt,
                                     onDismissError = viewModel::dismissError,
-                                    onToggleDisclaimer = viewModel::toggleDisclaimerMinimized
+                                    onToggleDisclaimer = viewModel::toggleDisclaimerMinimized,
+                                    onAttachMedia = viewModel::attachMediaFromUri,
+                                    onAttachmentError = viewModel::setAttachmentNotice,
+                                    onRemoveAttachment = viewModel::removePendingAttachment,
+                                    onDismissAttachmentNotice = viewModel::clearAttachmentNotice,
+                                    onOpenEmergency = viewModel::openEmergencySheet
+                                )
+                            }
+
+                            composable(ROUTE_FIRST_AID) {
+                                FirstAidScreen(
+                                    uiState = uiState,
+                                    strings = strings,
+                                    onSearchChange = viewModel::onFirstAidSearchChanged,
+                                    onSelectFilter = viewModel::selectFirstAidFilter,
+                                    onOpenTopic = viewModel::openFirstAidTopic,
+                                    onCloseTopic = viewModel::closeFirstAidTopic,
+                                    onOpenEmergency = viewModel::openEmergencySheet,
+                                    onAskNurseAboutTopic = { topic ->
+                                        viewModel.startNewConsultation()
+                                        viewModel.sendQuickPrompt(topic.consultPrompt)
+                                        navigateToTab(ROUTE_CHAT)
+                                    }
                                 )
                             }
 
@@ -279,6 +314,13 @@ fun HamshiraApp(
                         navigateToTab(ROUTE_CHAT)
                     },
                     onDismiss = viewModel::closeHistorySheet
+                )
+            }
+
+            if (uiState.isEmergencySheetOpen) {
+                EmergencyAmbulanceSheet(
+                    strings = strings,
+                    onDismiss = viewModel::closeEmergencySheet
                 )
             }
         }

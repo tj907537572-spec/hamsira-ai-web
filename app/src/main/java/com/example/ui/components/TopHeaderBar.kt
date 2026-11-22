@@ -1,6 +1,7 @@
 package com.example.ui.components
 
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -19,6 +20,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.AddComment
 import androidx.compose.material.icons.outlined.History
+import androidx.compose.material.icons.rounded.LocalPhone
 import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.Badge
 import androidx.compose.material3.HorizontalDivider
@@ -52,6 +54,7 @@ fun TopHeaderBar(
     savedSessionsCount: Int,
     onHistoryClick: () -> Unit,
     onNewDialogClick: () -> Unit,
+    onEmergencyClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val statusColors = LocalHamshiraStatusColors.current
@@ -118,7 +121,7 @@ fun TopHeaderBar(
                             )
                     )
                     Spacer(modifier = Modifier.width(10.dp))
-                    Column {
+                    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
                         Text(
                             text = strings.appTitle,
                             style = MaterialTheme.typography.titleLarge,
@@ -126,13 +129,32 @@ fun TopHeaderBar(
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
                         )
-                        Text(
-                            text = strings.appSubtitle,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
+                        Surface(
+                            color = badgeBg,
+                            shape = RoundedCornerShape(50),
+                            modifier = Modifier.testTag("connection_status_pill")
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(5.dp)
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(7.dp)
+                                        .clip(CircleShape)
+                                        .background(dotColor)
+                                )
+                                Text(
+                                    text = statusText,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = badgeTextColor,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                        }
                     }
                 }
 
@@ -141,26 +163,31 @@ fun TopHeaderBar(
                     horizontalArrangement = Arrangement.spacedBy(2.dp)
                 ) {
                     Surface(
-                        color = badgeBg,
+                        onClick = onEmergencyClick,
+                        color = statusColors.urgentContainer,
+                        contentColor = statusColors.urgent,
+                        border = BorderStroke(1.dp, statusColors.urgent.copy(alpha = 0.45f)),
                         shape = RoundedCornerShape(50),
-                        modifier = Modifier.testTag("connection_status_pill")
+                        modifier = Modifier
+                            .minimumInteractiveComponentSize()
+                            .testTag("emergency_header_button")
                     ) {
                         Row(
-                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
                             verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)
                         ) {
-                            Box(
-                                modifier = Modifier
-                                    .size(8.dp)
-                                    .clip(CircleShape)
-                                    .background(dotColor)
+                            Icon(
+                                imageVector = Icons.Rounded.LocalPhone,
+                                contentDescription = strings.emergencyCardTitle,
+                                tint = statusColors.urgent,
+                                modifier = Modifier.size(16.dp)
                             )
                             Text(
-                                text = statusText,
-                                style = MaterialTheme.typography.labelMedium,
-                                fontWeight = FontWeight.SemiBold,
-                                color = badgeTextColor,
+                                text = strings.emergencyButtonShort,
+                                style = MaterialTheme.typography.labelLarge,
+                                fontWeight = FontWeight.Bold,
+                                color = statusColors.urgent,
                                 maxLines = 1
                             )
                         }

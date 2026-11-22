@@ -15,6 +15,7 @@ import androidx.room.withTransaction
 import androidx.sqlite.db.SupportSQLiteDatabase
 import com.example.data.model.ChatMessage
 import com.example.data.model.ConsultationSession
+import com.example.data.model.MediaAttachment
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 
@@ -25,7 +26,10 @@ data class ChatMessageEntity(
     val isUser: Boolean,
     val content: String,
     val timestamp: Long,
-    val isError: Boolean = false
+    val isError: Boolean = false,
+    val attachmentUri: String? = null,
+    val attachmentMimeType: String? = null,
+    val attachmentIsVideo: Boolean = false
 )
 
 @Entity(tableName = "consultation_sessions")
@@ -44,7 +48,10 @@ fun ChatMessageEntity.toDomain(): ChatMessage = ChatMessage(
     isUser = isUser,
     content = content,
     timestamp = timestamp,
-    isError = isError
+    isError = isError,
+    attachmentUri = attachmentUri,
+    attachmentMimeType = attachmentMimeType,
+    attachmentIsVideo = attachmentIsVideo
 )
 
 fun ConsultationSessionEntity.toDomain(): ConsultationSession = ConsultationSession(
@@ -114,7 +121,7 @@ interface ConsultationSessionDao {
 
 @Database(
     entities = [ChatMessageEntity::class, ConsultationSessionEntity::class],
-    version = 2,
+    version = 3,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -170,6 +177,14 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_2_3 = object : Migration(2, 3) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `chat_messages` ADD COLUMN `attachmentUri` TEXT DEFAULT NULL")
+                db.execSQL("ALTER TABLE `chat_messages` ADD COLUMN `attachmentMimeType` TEXT DEFAULT NULL")
+                db.execSQL("ALTER TABLE `chat_messages` ADD COLUMN `attachmentIsVideo` INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+
         fun getInstance(context: Context): AppDatabase {
             return INSTANCE ?: synchronized(this) {
                 INSTANCE ?: Room.databaseBuilder(
@@ -177,7 +192,7 @@ abstract class AppDatabase : RoomDatabase() {
                     AppDatabase::class.java,
                     "hamshira_ai_db"
                 )
-                    .addMigrations(MIGRATION_1_2)
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
                     .build()
                     .also { INSTANCE = it }
             }
@@ -211,10 +226,21 @@ class ChatRepository(private val database: AppDatabase) {
         sessionId: String,
         isUser: Boolean,
         content: String,
-        isError: Boolean = false
+        isError: Boolean = false,
+        attachment: MediaAttachment? = null
     ): Long {
         val now = System.currentTimeMillis()
-        val preview = buildSnippet(content, 110)
+        val attachmentBadge = when {
+            attachment == null -> ""
+            attachment.isVideo -> "🎥 "
+            else -> "📷 "
+        }
+        val snippetBase = if (content.isBlank() && attachment != null) {
+            if (attachment.isVideo) "Видео" else "Акс"
+        } else {
+            buildSnippet(content, 105)
+        }
+        val preview = (attachmentBadge + snippetBase).trim()
 
         return database.withTransaction {
             val insertedId = messageDao.insertMessage(
@@ -223,13 +249,20 @@ class ChatRepository(private val database: AppDatabase) {
                     isUser = isUser,
                     content = content,
                     timestamp = now,
-                    isError = isError
+                    isError = isError,
+                    attachmentUri = attachment?.uriString,
+                    attachmentMimeType = attachment?.mimeType,
+                    attachmentIsVideo = attachment?.isVideo ?: false
                 )
             )
 
             val existing = sessionDao.getSessionById(sessionId)
             val updatedSession = if (existing == null) {
-                val initialTitle = if (isUser) buildSnippet(content, 60) else "Машварат"
+                val initialTitle = if (isUser) {
+                    (attachmentBadge + snippetBase).trim().take(60)
+                } else {
+                    "Машварат"
+                }
                 ConsultationSessionEntity(
                     sessionId = sessionId,
                     title = initialTitle,
@@ -240,7 +273,7 @@ class ChatRepository(private val database: AppDatabase) {
                 )
             } else {
                 val resolvedTitle = if (existing.title == "Машварат" && isUser) {
-                    buildSnippet(content, 60)
+                    (attachmentBadge + snippetBase).trim().take(60)
                 } else {
                     existing.title
                 }

@@ -9,7 +9,9 @@ export default async function handler(req, res) {
       return res.status(500).json({ error: 'GEMINI_API_KEY is not configured on Vercel' });
     }
 
+    const model = process.env.GEMINI_MODEL || 'gemini-flash-latest';
     const { prompt, contents, systemInstruction } = req.body || {};
+
     const body = contents
       ? { contents, ...(systemInstruction ? { systemInstruction } : {}) }
       : {
@@ -22,7 +24,7 @@ export default async function handler(req, res) {
         };
 
     const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`,
+      `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -31,8 +33,14 @@ export default async function handler(req, res) {
     );
 
     const data = await response.json();
+
+    if (!response.ok) {
+      console.error('Gemini error', response.status, JSON.stringify(data));
+    }
+
     return res.status(response.status).json(data);
   } catch (err) {
+    console.error('Proxy error', err);
     return res.status(500).json({ error: err.message || 'Proxy error' });
   }
-}
+      }

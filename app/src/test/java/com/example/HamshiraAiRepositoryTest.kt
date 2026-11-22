@@ -1,6 +1,7 @@
 package com.example
 
 import com.example.data.ai.BACKEND_CHAT_PROXY_URL
+import com.example.data.ai.BackendConsultationException
 import com.example.data.ai.HamshiraAiRepository
 import com.example.data.model.AppLanguage
 import com.example.data.model.ChatMessage
@@ -17,19 +18,21 @@ import okhttp3.ResponseBody.Companion.toResponseBody
 import okio.Buffer
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
+import java.net.UnknownHostException
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [36])
 class HamshiraAiRepositoryTest {
 
     @Test
-    fun `streamConsultation sends POST JSON to backend proxy without API key and parses generateContent response`() = runBlocking {
+    fun `streamConsultation sends POST JSON with prompt key to backend proxy without API key and parses candidates text`() = runBlocking {
         var capturedRequest: Request? = null
         var capturedBodyText = ""
 
@@ -92,35 +95,86 @@ class HamshiraAiRepositoryTest {
         assertNull(req.header("Authorization"))
 
         val payload = JSONObject(capturedBodyText)
-        assertTrue(payload.has("systemInstruction"))
-        assertTrue(payload.has("contents"))
-        val contents = payload.getJSONArray("contents")
-        assertEquals(3, contents.length())
-        assertEquals(
-            "Сарам каме дард мекунад",
-            contents.getJSONObject(2).getJSONArray("parts").getJSONObject(0).getString("text")
-        )
+        assertTrue(payload.has("prompt"))
+        assertFalse(payload.has("contents"))
+        val sentPrompt = payload.getString("prompt")
+        assertTrue(sentPrompt.contains("Сарам каме дард мекунад"))
+        assertTrue(sentPrompt.contains("Салом! Чӣ кӯмак расонам?"))
     }
 
     @Test
-    fun `extractTextFromGenerateContentJson joins multi-part generateContent responses`() {
-        val repository = HamshiraAiRepository()
-        val json = """
-            {
-              "candidates": [
-                {
-                  "content": {
-                    "parts": [
-                      { "text": "Қисми якум. " },
-                      { "text": "Қисми дуюм." }
-                    ]
-                  }
-                }
-              ]
-            }
-        """.trimIndent()
+    fun `streamConsultation throws localized BackendConsultationException on HTTP 500 JSON error`() = runBlocking {
+        val interceptor = Interceptor { chain ->
+            Response.Builder()
+                .request(chain.request())
+                .protocol(Protocol.HTTP_1_1)
+                .code(500)
+                .message("Internal Server Error")
+                .addHeader("Content-Type", "application/json")
+                .body("""{"error":"Proxy overloaded"}""".toResponseBody("application/json".toMediaType()))
+                .build()
+        }
 
-        val result = repository.extractTextFromGenerateContentJson(json)
-        assertEquals("Қисми якум. Қисми дуюм.", result)
+        val repository = HamshiraAiRepository(
+            httpClient = OkHttpClient.Builder().addInterceptor(interceptor).build()
+        )
+
+        val failure = runCatching {
+            repository.streamConsultation(
+                history = emptyList(),
+                userPrompt = "Ҳароратам баланд аст",
+                language = AppLanguage.TG,
+                responseStyle = ResponseStyle.BALANCED
+            ).toList()
+        }.exceptionOrNull()
+
+        assertTrue(failure is BackendConsultationException)
+        assertTrue(failure!!.message!!.contains("500"))
+        assertTrue(failure.message!!.contains("Proxy overloaded"))
+    }
+
+    @Test
+    fun `streamConsultation throws localized BackendConsultationException on network failure and invalid JSON`() = runBlocking {
+        val offlineClient = OkHttpClient.Builder()
+            .addInterceptor { throw UnknownHostException("Unable to resolve host") }
+            .build()
+        val offlineRepo = HamshiraAiRepository(httpClient = offlineClient)
+
+        val networkError = runCatching {
+            offlineRepo.streamConsultation(
+                history = emptyList(),
+                userPrompt = "Савол",
+                language = AppLanguage.TG,
+                responseStyle = ResponseStyle.CONCISE
+            ).toList()
+        }.exceptionOrNull()
+
+        assertTrue(networkError is BackendConsultationException)
+        assertTrue(networkError!!.message!!.contains("интернет", ignoreCase = true))
+
+        val badJsonClient = OkHttpClient.Builder()
+            .addInterceptor { chain ->
+                Response.Builder()
+                    .request(chain.request())
+                    .protocol(Protocol.HTTP_1_1)
+                    .code(200)
+                    .message("OK")
+                    .body("<html>bad gateway</html>".toResponseBody("text/html".toMediaType()))
+                    .build()
+            }
+            .build()
+        val badJsonRepo = HamshiraAiRepository(httpClient = badJsonClient)
+
+        val jsonError = runCatching {
+            badJsonRepo.streamConsultation(
+                history = emptyList(),
+                userPrompt = "Савол",
+                language = AppLanguage.TG,
+                responseStyle = ResponseStyle.CONCISE
+            ).toList()
+        }.exceptionOrNull()
+
+        assertTrue(jsonError is BackendConsultationException)
+        assertTrue(jsonError!!.message!!.isNotBlank())
     }
 }
